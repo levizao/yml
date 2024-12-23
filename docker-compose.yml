@@ -1,0 +1,155 @@
+version: "3.8"
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    command:
+      - "--api.insecure=true"                      # Habilita o painel da API do Traefik (não seguro)
+      - "--providers.docker=true"                   # Habilita o Docker como provedor para Traefik
+      - "--entryPoints.web.address=:8081"           # Altera para a porta 8081 (HTTP)
+      - "--entryPoints.websecure.address=:8443"     # Porta 8443 para HTTPS (alterada)
+    ports:
+      - "8081:80"      # Mapeia porta 8081 para o HTTP
+      - "8443:443"     # Altera a porta HTTPS para 8443
+      - "8080:8080"    # Porta do painel Traefik
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro" # Acesso ao Docker
+    networks:
+      - web
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    networks:
+      - web
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17
+    container_name: postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mydb
+    ports:
+      - "5432:5432"
+    networks:
+      - web
+    restart: unless-stopped
+
+  evoapi:
+    image: atendai/evolution-api:v2.2.0
+    container_name: evoapi
+    environment:
+      - "VIRTUAL_HOST=evoapi.localhost"        # Adiciona variável de ambiente para o Traefik
+      - "VIRTUAL_PORT=8080"                    # Porta do serviço dentro do container
+    labels:
+      - "traefik.enable=true"                                      # Habilita o Traefik para esse serviço
+      - "traefik.http.routers.evoapi.rule=Host(`evoapi.localhost`)"  # Regra para o Traefik
+      - "traefik.http.routers.evoapi.entrypoints=websecure"          # Ponto de entrada para HTTPS
+      - "traefik.http.services.evoapi.loadbalancer.server.port=8080" # Porta do serviço no container
+    networks:
+      - web
+    restart: unless-stopped
+
+networks:
+  web:
+    external: true  # Rede externa chamada 'web'
+
+ typebot-db:
+    image: postgres:13
+    restart: always
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - web
+    environment:
+      - POSTGRES_DB=typebot
+      - POSTGRES_PASSWORD=typebot
+
+  typebot-builder:
+    ports:
+      - 4001:4000
+    networks:
+      - web
+    image: baptistearno/typebot-builder:latest
+    restart: always
+    depends_on:
+      - typebot-db
+    environment:
+      - DATABASE_URL=postgresql://postgres:typebot@typebot-db:5432/typebot
+      - NEXTAUTH_URL=http://localhost:4001
+      - NEXT_PUBLIC_VIEWER_URL=http://localhost:4002
+      - ENCRYPTION_SECRET=VA4oj8G9dnuOfdfLFZHOEH1oXQhK0zLt
+      - ADMIN_EMAIL=levileiteunv@gmail.com
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_USERNAME=levileiteunv@gmail.com
+      - SMTP_PASSWORD=tktveawwkrhsnkkf
+      - SMTP_AUTH_DISABLED=false
+      - SMTP_PORT=465
+      - SMTP_SECURE=true
+      - NEXT_PUBLIC_SMTP_FROM=levileiteunv@gmail.com
+      - S3_ACCESS_KEY=minio
+      - S3_SECRET_KEY=minio123
+      - S3_BUCKET=typebot
+      - S3_ENDPOINT=storage.seudominio.com.br
+
+  typebot-viewer:
+    ports:
+      - 4002:4000
+    networks:
+      - web
+    image: baptistearno/typebot-viewer:latest
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://postgres:typebot@typebot-db:5432/typebot
+      - NEXT_PUBLIC_VIEWER_URL=http://localhost:4002
+      - NEXTAUTH_URL=http://localhost:4001
+      - ENCRYPTION_SECRET=VA4oj8G9dnuOfdfLFZHOEH1oXQhK0zLt
+      - S3_ACCESS_KEY=minio
+      - S3_SECRET_KEY=minio123
+      - S3_BUCKET=typebot
+      - S3_ENDPOINT=storage.seudominio.com.br
+
+  mail:
+    image: bytemark/smtp
+    restart: always
+    networks:
+      - web
+
+  minio:
+    labels:
+      virtual.host: 'storage.seudominio.com.br'
+      virtual.port: '7000'
+      virtual.tls-email: 'levileiteunv@gmail.com'
+    image: minio/minio
+    command: server /data
+    ports:
+      - '7000:7000'
+    networks:
+      - web
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    volumes:
+      - s3_data:/data
+
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 10;
+      /usr/bin/mc config host add minio http://minio:9000 minio minio123;
+      /usr/bin/mc mb minio/typebot;
+      /usr/bin/mc anonymous set public minio/typebot/public;
+      exit 0;
+      "
+
+volumes:
+  db_data:
+  s3_data:
